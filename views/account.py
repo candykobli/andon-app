@@ -58,8 +58,9 @@ def _welcome(c):
                 "different view for each role. It runs on simulated data from a demo plant.")
     st.markdown("Access is approved personally. Send a request below; once it is approved you will be told, and you can sign in "
                 "with the PIN you chose here.")
-    if not ui.secret("ADMIN_PIN"):
-        st.warning("Setup: add ADMIN_PIN (at least 8 digits) to the app's secrets so the owner can approve requests.")
+    problem = ui.admin_pin_problem()
+    if problem:
+        st.warning(f"Setup for the owner: {problem} Until then nobody can sign in as admin.", icon=":material/build:")
     t_req, t_in = st.tabs(["Request access", "Sign in"])
     with t_req:
         _request_form(c)

@@ -408,27 +408,39 @@ DEMO_PINS = ("0000", "1111", "1234", "2222", "3333", "4444", "5555", "6666", "77
 def secure_demo(engine: Engine, admin_pin: str | None) -> dict:
     """Private demo: the PINs published for the public demo must not open anything.
     Demo accounts with a published PIN are disabled (their history stays), the demo access request is withdrawn, and
-    the admin account gets the PIN from the secrets (ADMIN_PIN). Runs at every start, so changing ADMIN_PIN works."""
+    an admin account always ends up active with the PIN from the secrets (ADMIN_PIN), also after the PIN changes or
+    after a start without a valid ADMIN_PIN. Runs at start-up and whenever the secret changes."""
     import secrets as _s
     out = {"disabled": 0, "admin": False}
     admin_pin = str(admin_pin).strip() if admin_pin else ""
     if admin_pin and (admin_pin in DEMO_PINS or not admin_pin.isdigit() or len(admin_pin) < 8):
-        admin_pin = ""  # a weak or published admin PIN is ignored: the admin account is disabled instead
+        admin_pin = ""  # a weak or published admin PIN is ignored
     with engine.begin() as cx:
         users = cx.execute(select(responders)).mappings().all()
-        admin_ok = bool(admin_pin) and any(check_pin(admin_pin, u["pin_hash"]) and (u["is_admin"] or u["level"] == "admin")
-                                           and u["status"] == "active" for u in users)
+        is_admin = lambda u: bool(u["is_admin"]) or u["level"] == "admin"  # noqa: E731
+        # 1. the admin PIN from the secrets
+        if admin_pin:
+            ok = [u for u in users if is_admin(u) and u["status"] == "active" and check_pin(admin_pin, u["pin_hash"])]
+            if not ok:
+                cands = sorted([u for u in users if is_admin(u)], key=lambda u: (u["name"] != "Admin", u["id"]))
+                if cands:
+                    cx.execute(update(responders).where(responders.c.id == cands[0]["id"]).values(
+                        pin_hash=hash_pin(admin_pin), status="active", active=True))
+                    keep = cands[0]["id"]
+                else:
+                    keep = cx.execute(insert(responders).values(
+                        name="Admin", role="Supervisor", pin_hash=hash_pin(admin_pin), is_admin=True, active=True,
+                        level="admin", status="active")).inserted_primary_key[0]
+                audit(cx, "setup", "admin_pin_set", f"user {keep} · from the ADMIN_PIN secret")
+                out["admin"] = True
+                users = cx.execute(select(responders)).mappings().all()
+        # 2. every other account that still opens with a published demo PIN
         for u in users:
             if u["status"] not in ("active", "pending"):
                 continue
-            demo = any(check_pin(p, u["pin_hash"]) for p in DEMO_PINS)
-            if not demo:
+            if admin_pin and is_admin(u) and check_pin(admin_pin, u["pin_hash"]):
                 continue
-            is_admin = u["is_admin"] or u["level"] == "admin"
-            if is_admin and admin_pin and not admin_ok:
-                cx.execute(update(responders).where(responders.c.id == u["id"]).values(pin_hash=hash_pin(admin_pin)))
-                audit(cx, "setup", "admin_pin_set", f"user {u['id']} · from ADMIN_PIN secret")
-                admin_ok = out["admin"] = True
+            if not any(check_pin(p, u["pin_hash"]) for p in DEMO_PINS):
                 continue
             cx.execute(update(responders).where(responders.c.id == u["id"]).values(
                 pin_hash=hash_pin(_s.token_hex(16)), status="rejected" if u["status"] == "pending" else "disabled"))

@@ -28,9 +28,35 @@ def engine():
     url = secret("DATABASE_URL")
     e = db.make_engine(url)
     db.init_db(e, seed_demo=str(secret("SEED_DEMO", "1")) != "0")
-    if private():
-        db.secure_demo(e, secret("ADMIN_PIN"))  # the public demo PINs stop working; the admin PIN comes from the secrets
     return e
+
+
+def admin_pin_problem() -> str | None:
+    """Why the ADMIN_PIN secret cannot be used, or None when it is fine."""
+    pin = str(secret("ADMIN_PIN") or "").strip()
+    if not pin:
+        return "ADMIN_PIN is not set in the app's secrets."
+    if not pin.isdigit() or not 8 <= len(pin) <= 12:
+        return "ADMIN_PIN must be 8 to 12 digits, with no spaces or letters."
+    if pin in db.DEMO_PINS or len(set(pin)) == 1 or pin in "01234567890123" or pin in "98765432109876":
+        return "ADMIN_PIN is too easy to guess. Choose another one."
+    return None
+
+
+@st.cache_resource(show_spinner=False)
+def _secured(private_on: bool, pin_fingerprint: str) -> bool:
+    """Runs again whenever PRIVATE_DEMO or ADMIN_PIN change in the secrets, without waiting for a restart."""
+    if private_on:
+        db.secure_demo(engine(), secret("ADMIN_PIN") if admin_pin_problem() is None else None)
+    return True
+
+
+def secure() -> None:
+    """Call at the top of every run: in a private demo the published PINs stop working and the admin PIN comes
+    from the secrets."""
+    import hashlib
+    pin = str(secret("ADMIN_PIN") or "").strip()
+    _secured(private(), hashlib.sha256(("andon:" + pin).encode()).hexdigest())
 
 
 def device_ok() -> bool:

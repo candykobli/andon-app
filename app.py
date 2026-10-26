@@ -24,6 +24,7 @@ from views import account, admin, analytics, board, configure, machines, oee_boa
 st.set_page_config(page_title="Andon", page_icon=":material/emergency_heat:", layout="wide")
 
 ui.engine()  # connect, create or upgrade tables on first run
+ui.secure()  # private demo: disable the published demo PINs, take the admin PIN from the secrets
 
 
 def _tv_home():
