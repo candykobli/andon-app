@@ -208,6 +208,27 @@ python collector/collector.py --config collector/config.yaml
 - **Network:** outbound only to the database port (5432, or 6543 for the Supabase pooler).
 - When the connector starts, it switches off the in-app simulator.
 
+## Private demo: visitors need your approval
+
+For a demo you share publicly (a LinkedIn post, a job application) but want to control, set these in the hosting platform's secrets (Streamlit Cloud: *App settings → Secrets*):
+
+```toml
+PRIVATE_DEMO = "1"                  # visitors only see a welcome page with a request form
+ADMIN_PIN = "your 8+ digit PIN"     # your admin sign-in; the published demo PINs stop working
+DATABASE_URL = "postgresql://…"     # needed, so requests and approvals survive restarts
+NTFY_TOPIC = "a-long-random-name"   # optional: phone push for every new request (free ntfy app)
+DEVICE_KEY = "a-long-random-key"    # optional: lets a TV open /board?kiosk=1&b=1&key=… without signing in
+```
+
+What changes when `PRIVATE_DEMO = "1"`:
+- Anonymous visitors get one page: a short description and **Request access** (name, work email, organisation, access level, reason, a PIN of at least 6 digits). No other page exists for them, whatever address they type.
+- You approve or reject under *Admin → Access requests*, and can grant a different level than requested. Then tell the person; they sign in with the PIN they chose and start on the Andon board.
+- Every demo account with a published PIN (0000, 1234, 6666…) is disabled at start-up, and the sample access request is withdrawn. The admin account takes `ADMIN_PIN` (at least 8 digits, not a demo PIN; otherwise the admin account is disabled too).
+- At most 3 requests per visitor and 60 in total per hour. Five wrong PINs lock a device for 10 minutes; 40 wrong PINs from everyone together pause PIN sign-in for 10 minutes.
+- Requests, approvals and sign-ins are in the audit log. The welcome page tells visitors what their details are used for.
+- New requests can also be sent to Teams, a webhook or ntfy: add a channel with *When: New access requests* under *Configure → Notifications*.
+- The operator tablet moves to `/operator?station=ID` (the start page is the Andon board).
+
 ## Choosing a database
 
 Set `DATABASE_URL` in Streamlit Secrets or as an environment variable. Any PostgreSQL works:

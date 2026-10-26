@@ -402,6 +402,51 @@ def upgrade_defaults(cx) -> None:
                        defaults=dict(short_name=name, line_stop=True, oee_category="planned", show_on_board=False))
 
 
+DEMO_PINS = ("0000", "1111", "1234", "2222", "3333", "4444", "5555", "6666", "7777", "8888", "4321")
+
+
+def secure_demo(engine: Engine, admin_pin: str | None) -> dict:
+    """Private demo: the PINs published for the public demo must not open anything.
+    Demo accounts with a published PIN are disabled (their history stays), the demo access request is withdrawn, and
+    the admin account gets the PIN from the secrets (ADMIN_PIN). Runs at every start, so changing ADMIN_PIN works."""
+    import secrets as _s
+    out = {"disabled": 0, "admin": False}
+    admin_pin = str(admin_pin).strip() if admin_pin else ""
+    if admin_pin and (admin_pin in DEMO_PINS or not admin_pin.isdigit() or len(admin_pin) < 8):
+        admin_pin = ""  # a weak or published admin PIN is ignored: the admin account is disabled instead
+    with engine.begin() as cx:
+        users = cx.execute(select(responders)).mappings().all()
+        admin_ok = bool(admin_pin) and any(check_pin(admin_pin, u["pin_hash"]) and (u["is_admin"] or u["level"] == "admin")
+                                           and u["status"] == "active" for u in users)
+        for u in users:
+            if u["status"] not in ("active", "pending"):
+                continue
+            demo = any(check_pin(p, u["pin_hash"]) for p in DEMO_PINS)
+            if not demo:
+                continue
+            is_admin = u["is_admin"] or u["level"] == "admin"
+            if is_admin and admin_pin and not admin_ok:
+                cx.execute(update(responders).where(responders.c.id == u["id"]).values(pin_hash=hash_pin(admin_pin)))
+                audit(cx, "setup", "admin_pin_set", f"user {u['id']} · from ADMIN_PIN secret")
+                admin_ok = out["admin"] = True
+                continue
+            cx.execute(update(responders).where(responders.c.id == u["id"]).values(
+                pin_hash=hash_pin(_s.token_hex(16)), status="rejected" if u["status"] == "pending" else "disabled"))
+            out["disabled"] += 1
+        if out["disabled"]:
+            audit(cx, "setup", "demo_pins_disabled", f"{out['disabled']} demo account(s) with published PINs")
+    return out
+
+
+def recent_requests(engine: Engine, client: str | None, minutes: int = 60) -> int:
+    q = select(func.count()).select_from(audit_log).where(audit_log.c.action == "access_requested",
+                                                          audit_log.c.ts >= utcnow() - timedelta(minutes=minutes))
+    if client:
+        q = q.where(audit_log.c.client == client)
+    with engine.connect() as cx:
+        return int(cx.execute(q).scalar() or 0)
+
+
 # ------------------------------------------------------------------ reads
 def read_df(engine: Engine, table: Table, active_only: bool = False) -> pd.DataFrame:
     q = select(table)

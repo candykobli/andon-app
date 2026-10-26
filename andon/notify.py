@@ -36,8 +36,10 @@ from sqlalchemy.exc import IntegrityError
 
 from . import db, logic
 
-KINDS = {"log": "Log only (nothing is sent)", "teams": "Microsoft Teams", "webhook": "Webhook (JSON)", "sms": "SMS (Twilio)"}
-TRIGGERS = {"red": "Line stops", "escalation": "Escalations and line stops", "all": "Every new call, stops and escalations"}
+KINDS = {"log": "Log only (nothing is sent)", "teams": "Microsoft Teams", "webhook": "Webhook (JSON)", "sms": "SMS (Twilio)",
+         "ntfy": "Phone push (ntfy app)"}
+TRIGGERS = {"red": "Line stops", "escalation": "Escalations and line stops", "all": "Every new call, stops and escalations",
+            "requests": "New access requests"}
 FRESH_S = 600          # only events that happened in the last 10 minutes (no flood after a restart)
 MAX_PER_10_MIN = 20
 TIMEOUT_S = 8
@@ -78,7 +80,7 @@ def check_channel(kind: str, target: str | None) -> str | None:
     real = resolve_target(target)
     if not real:
         return "No target (or the ${SECRET} it refers to is not set)."
-    if kind in ("teams", "webhook"):
+    if kind in ("teams", "webhook", "ntfy"):
         if not real.startswith("https://"):
             return "The URL must start with https://"
     if kind == "sms":
@@ -129,6 +131,12 @@ def send(kind: str, target: str | None, msg: dict, call: dict) -> str:
                 "actions": [{"type": "Action.OpenUrl", "title": "Open in Andon", "url": msg["link"]}] if msg["link"] else []}
         return _post_json(real, {"type": "message", "attachments": [
             {"contentType": "application/vnd.microsoft.card.adaptive", "contentUrl": None, "content": card}]})
+    if kind == "ntfy":  # https://ntfy.sh/<secret topic>: a free push notification on the phone (ntfy app)
+        req = urllib.request.Request(real, data=msg["body"].encode(), method="POST", headers={
+            "Title": msg["title"].encode("ascii", "ignore").decode().strip() or "Andon", "Tags": "rotating_light",
+            "User-Agent": "andon-notify", **({"Click": msg["link"]} if msg["link"] else {})})
+        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:  # noqa: S310 (https enforced in check_channel)
+            return f"HTTP {r.status}"
     if kind == "webhook":
         return _post_json(real, {"text": msg["text"], "title": msg["title"], "body": msg["body"], "link": msg["link"],
                                  "call": {k: (str(v) if isinstance(v, (datetime, pd.Timestamp)) else v) for k, v in call.items()
@@ -175,6 +183,8 @@ def due_events(call: dict, ct: dict, now: datetime) -> list[str]:
 
 def wanted(channel: dict, event: str, call: dict) -> bool:
     trig = channel.get("trigger") or "red"
+    if trig == "requests":  # that channel is only for access requests
+        return False
     if trig == "red" and event != "red":
         return False
     if trig == "escalation" and event not in ("red", "L2", "L3"):
@@ -274,6 +284,39 @@ def send_test(engine, channel: dict, actor: str = "admin", client: str | None = 
                                                 status="sent" if ok else "failed", message=msg["text"][:500], detail=detail[:300]))
         db.audit(cx, actor, "notify_test", f"channel {channel['id']} · {'ok' if ok else 'failed'}", client)
     return ok, detail
+
+
+def access_request(engine, request_id: int, name: str, email: str, level: str, note: str) -> int:
+    """Tell the admin that someone asked for access: channels with the trigger 'New access requests', and the
+    NTFY_TOPIC secret (a quick phone push without configuring a channel). Never raises."""
+    title = f"New access request: {name}"
+    body = f"{name} ({email or 'no email'}) asks for {db.LEVELS.get(level, level)}. {(note or '').strip()[:200]}"
+    app_url = db.get_settings(engine).get("app_url") or ""
+    msg = {"title": "🔑 " + title, "body": body, "link": f"{app_url.rstrip('/')}/admin" if app_url else "",
+           "text": f"🔑 {title}\n{body}"}
+    call = {"id": 0, "line": "", "station": "", "type": "Access request", "problem": title, "line_id": 0, "age_s": 0}
+    sent = 0
+    topic = secret("NTFY_TOPIC")
+    targets = [({"id": 0, "kind": "ntfy", "target": f"https://ntfy.sh/{topic.strip()}"}) ] if topic else []
+    try:
+        chans = db.read_df(engine, db.notify_channels, active_only=True)
+        targets += [c for c in chans.to_dict("records") if c.get("trigger") == "requests"]
+    except Exception:
+        pass
+    for ch in targets:
+        try:
+            detail, status = send(ch["kind"], ch.get("target"), msg, call), ("logged" if ch["kind"] == "log" else "sent")
+            sent += 1
+        except Exception as exc:
+            detail, status = f"{type(exc).__name__}: {str(exc)[:200]}", "failed"
+        try:
+            with engine.begin() as cx:
+                cx.execute(insert(db.notify_log).values(ts=db.utcnow(), channel_id=int(ch["id"]), call_id=0,
+                                                        event=f"req{int(request_id)}", status=status,
+                                                        message=msg["text"][:500], detail=str(detail)[:300]))
+        except Exception:
+            pass
+    return sent
 
 
 def main():  # a small service for plants that want notifications without a screen open

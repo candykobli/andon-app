@@ -64,6 +64,12 @@ This follows the zones-and-conduits idea from IEC 62443 and the Purdue model:
 - **Security status page** (Admin → Security). It flags default PINs, demo mode, missing sign-in, a missing device key and an unencrypted database.
 - **Safe display.** Names and notes are escaped before display, and all database access uses parameterised queries, which protects against SQL injection.
 
+**Private demo (`PRIVATE_DEMO = "1"`)**
+- Anonymous visitors can only open a welcome page and send an access request; every other page is not registered for them.
+- Published demo PINs are disabled at start-up; the admin PIN comes from the secrets (8+ digits). New PINs need 6+ digits and are checked against obvious patterns.
+- Rate limits on requests (3 per visitor, 60 in total per hour) and a global pause after 40 wrong PINs in 10 minutes, on top of the per-device lock-out.
+- Requesters' names and emails are personal data: they are shown only to admins, used only to decide on access, and can be deleted on request (GDPR).
+
 **Notifications**
 - Sent by the app (Level 4), **never by the connector**, so the plant network keeps no route to the internet.
 - Only HTTPS webhooks are accepted. Webhook URLs and phone numbers are masked on screen, and can be kept out of the database entirely with `${SECRET_NAME}`.

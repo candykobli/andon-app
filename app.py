@@ -32,9 +32,10 @@ def _tv_home():
                 "- Andon board: `/board?kiosk=1&b=<board id>` (board ids are under Configure → Boards)\n"
                 "- OEE board: `/oee?kiosk=1&lines=1,2`")
 
-P = {
-    "operator": st.Page(operator.render, title="Operator", icon=":material/touch_app:", default=True),  # served at / (tablets: /?station=ID)
-    "board": st.Page(board.render, title="Andon board", icon=":material/tv:", url_path="board"),
+PRIVATE = ui.private()
+P = {  # in the private demo, visitors start on the Andon board; on a real plant the start page is the operator tablet
+    "operator": st.Page(operator.render, title="Operator", icon=":material/touch_app:", url_path="operator", default=not PRIVATE),
+    "board": st.Page(board.render, title="Andon board", icon=":material/tv:", url_path="board", default=PRIVATE),
     "oee": st.Page(oee_board.render, title="OEE board", icon=":material/speed:", url_path="oee"),
     "responder": st.Page(responder.render, title="Responder", icon=":material/support_agent:", url_path="responder"),
     "machines": st.Page(machines.render, title="Machines", icon=":material/precision_manufacturing:", url_path="machines"),
@@ -46,12 +47,15 @@ P = {
 ui.PAGES.update(P)
 
 kiosk = st.query_params.get("kiosk") == "1"
-if kiosk:
+if ui.private() and ui.current_user() is None and not ui.device_ok():
+    # Private demo: until an admin approves them, visitors only get the welcome page with the request form.
+    nav = st.navigation([st.Page(account.render, title="Welcome", icon=":material/lock:", url_path="welcome")], position="hidden")
+elif kiosk:
     # Wall-mounted TV: only the boards, no menu, no configuration.
     # The first page of a navigation is served at "/", so a small start page keeps /board and /oee addressable.
     nav = st.navigation([st.Page(_tv_home, title="TV screens", url_path="tv"), P["board"], P["oee"]], position="hidden")
 else:
-    visible = [P["operator"], P["board"], P["oee"]]
+    visible = [P["board"], P["operator"], P["oee"]] if PRIVATE else [P["operator"], P["board"], P["oee"]]
     if ui.can("respond"):
         visible.append(P["responder"])
     if ui.can("machines"):

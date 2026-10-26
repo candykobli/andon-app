@@ -17,12 +17,28 @@ def secret(name: str, default=None):
     return value or os.environ.get(name) or default
 
 
+def private() -> bool:
+    """Private demo (secret PRIVATE_DEMO = "1"): visitors see only a welcome page with a request form until an admin
+    approves them. Set in the hosting platform's secrets, never from inside the app."""
+    return str(secret("PRIVATE_DEMO", "0")).strip() == "1"
+
+
 @st.cache_resource(show_spinner="Connecting to the database…")
 def engine():
     url = secret("DATABASE_URL")
     e = db.make_engine(url)
     db.init_db(e, seed_demo=str(secret("SEED_DEMO", "1")) != "0")
+    if private():
+        db.secure_demo(e, secret("ADMIN_PIN"))  # the public demo PINs stop working; the admin PIN comes from the secrets
     return e
+
+
+def device_ok() -> bool:
+    """A tablet or TV opened with the right ?key=DEVICE_KEY."""
+    import hmac
+    key = secret("DEVICE_KEY")
+    given = st.query_params.get("key", "")
+    return bool(key and given and hmac.compare_digest(str(given), str(key)))
 
 
 def using_sqlite() -> bool:
@@ -95,13 +111,14 @@ def css(extra: str = "") -> None:
 
 
 def demo_pin_hint() -> None:
-    if cfg()["settings"].get("demo_mode") == "1":
+    if cfg()["settings"].get("demo_mode") == "1" and not private():
         st.caption("Demo PINs: Team leader 1111 · Maintenance 2222 · Quality 3333 · Logistics 4444 · "
                    "Supervisor 5555 · Production manager 6666 · Admin 0000")
 
 
 # ------------------------------------------------------------------ access control
 MAX_FAILED = 5          # wrong PINs allowed per device in LOCK_MIN minutes
+GLOBAL_MAX_FAILED = 40  # private demo: wrong PINs from all devices together before sign-in pauses
 LOCK_MIN = 10
 
 
@@ -150,6 +167,11 @@ def require(kind: str) -> None:
         st.stop()
     if kind == "floor":
         key = secret("DEVICE_KEY")
+        if private():  # private demo: shop-floor pages need an approved sign-in or a device key
+            if current_user() is not None or device_ok():
+                return
+            st.info("This is a private demo. Request access on the welcome page.", icon=":material/lock:")
+            st.stop()
         if not key or user is not None:
             return
         given = st.query_params.get("key", "")
@@ -173,6 +195,9 @@ def check_pin(pin: str, admin: bool = False):
     cl = client_id()
     if db.failed_logins(e, cl, LOCK_MIN) >= MAX_FAILED:
         return None, f"Too many wrong PINs from this device. Try again in {LOCK_MIN} minutes."
+    if private() and db.failed_logins(e, None, LOCK_MIN) >= GLOBAL_MAX_FAILED:
+        # someone is guessing from many devices: pause all PIN sign-ins for a while
+        return None, f"Sign-in is paused for a few minutes because of many wrong PINs. Try again in {LOCK_MIN} minutes."
     r = db.verify_pin(e, pin, admin=admin)
     if r is None:
         db.audit(e, "unknown", "pin_failed", "admin sign-in" if admin else "responder PIN", cl)
