@@ -1,0 +1,106 @@
+# Andon connector configuration. Copy to config.yaml (kept out of Git) and edit.
+# Stations are referenced as "Line name/Station name", exactly as named in the app (Admin page), or by numeric id.
+# Signal keys must match Admin → Signals & rules (state, fault_code, speed, good, scrap, temperature, pressure, ...).
+# ${VAR} reads an environment variable, so passwords and tokens never live in this file.
+# Security: give every source a READ-ONLY account. The connector never writes to machines. See SECURITY.md.
+
+database_url: ${DATABASE_URL}      # use the least-privilege andon_collector account (sql/roles.sql)
+interval_s: 2                      # how often readings are written and rules are checked
+disable_simulator: true            # switches off the in-app simulator once real data flows
+
+sources:
+
+  # --- SCADA over OPC UA (Ignition, WinCC, Kepware, AVEVA) or a PLC's own OPC UA server
+  - type: opcua
+    endpoint: opc.tcp://scada01.plant.local:4840
+    username: andon_reader
+    password: ${OPCUA_PASSWORD}
+    security: Basic256Sha256,SignAndEncrypt,certs/andon.der,certs/andon_key.pem   # encrypted + signed
+    tags:
+      - {node: "ns=2;s=Line1.Feed.State", station: "Line 1/Feed", signal: state,
+         map: {0: Stopped, 1: Running, 2: Idle, 3: Fault}}
+      - {node: "ns=2;s=Line1.Feed.FaultText", station: "Line 1/Feed", signal: fault_code}
+      - {node: "ns=2;s=Line1.Feed.Speed", station: "Line 1/Feed", signal: speed}
+      - {node: "ns=2;s=Line1.Feed.GoodCount", station: "Line 1/Feed", signal: good}
+      - {node: "ns=2;s=Line1.Feed.ScrapCount", station: "Line 1/Feed", signal: scrap}
+      - {node: "ns=2;s=Line1.Feed.MotorTemp", station: "Line 1/Feed", signal: temperature, scale: 0.1}
+
+  # --- Kafka (plant or enterprise event streams: Confluent, Redpanda, AWS MSK, Azure Event Hubs Kafka endpoint)
+  - type: kafka
+    bootstrap_servers: kafka1.dmz.local:9093,kafka2.dmz.local:9093
+    topics: [plant.machine-signals]
+    group_id: andon-collector
+    security_protocol: SASL_SSL      # or SSL with client certificates (cert_file / key_file)
+    sasl_mechanism: SCRAM-SHA-512
+    username: andon
+    password: ${KAFKA_PASSWORD}
+    ca_file: certs/kafka-ca.pem
+    # Messages are JSON, for example:
+    #   {"station": "Line 2/Test", "values": {"state": "Running", "speed": 21.0}, "ts": "2026-10-25T12:00:00Z"}
+    #   {"station": "Line 2/Test", "signal": "vibration", "value": 3.1}
+    # Existing schema with other field names? Rename them:
+    # fields: {station: asset, signal: tag, value: val, ts: timestamp}
+    # Station in the message key, signals in the value: station_from: key
+    signals:
+      state: {map: {"0": Stopped, "1": Running, "2": Idle, "3": Fault}, default: Running}
+
+  # --- SCADA historian / database (Ignition transaction groups, WinCC archives, AVEVA Historian, MES tables)
+  - type: sql
+    url: mssql+pyodbc://andon_reader:${HISTORIAN_PASSWORD}@historian01/Runtime?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes
+    interval_s: 5
+    start: now                     # "now" = only new rows; "all" = read the backlog first
+    query: >
+      SELECT asset AS station, tag AS signal, value AS value, t_stamp AS ts
+      FROM andon_feed WHERE t_stamp > :since ORDER BY t_stamp
+
+  # --- MQTT (IoT gateways, Node-RED, Ignition MQTT Transmission in JSON mode)
+  - type: mqtt
+    host: broker.plant.local
+    port: 8883
+    tls: {ca_file: certs/broker-ca.pem}      # or tls: true to use the system's trusted CAs
+    username: andon
+    password: ${MQTT_PASSWORD}
+    topic: "factory/{line}/{station}/{signal}"   # e.g. factory/Line 2/Test/vibration  payload: 3.2
+    # Use "factory/{line}/{station}" to receive one JSON object with several signals.
+    signals:
+      state: {map: {"0": Stopped, "1": Running, "2": Idle, "3": Fault}, default: Running}
+
+  # --- Modbus TCP (older PLCs, meters). No encryption exists in Modbus: isolated machine network only.
+  - type: modbus
+    host: 10.20.30.40
+    port: 502
+    unit: 1
+    tags:
+      - {address: 0, type: holding, datatype: uint16, station: "Line 3/Cartoner", signal: state,
+         map: {0: Stopped, 1: Running, 2: Idle, 3: Fault}}
+      - {address: 1, type: holding, datatype: uint16, station: "Line 3/Cartoner", signal: speed}
+      - {address: 2, type: holding, datatype: float32, station: "Line 3/Cartoner", signal: pressure}
+
+  # --- HTTP(S) push from any SCADA or script (Ignition gateway script system.net.httpPost, WinCC, Node-RED)
+  - type: http
+    port: 8443
+    token: ${ANDON_PUSH_TOKEN}          # required; at least 16 random characters
+    cert_file: certs/collector.pem      # HTTPS
+    key_file: certs/collector_key.pem
+    allowed_ips: [10.20.0.0/16]         # only the plant network may push
+    # POST https://<collector>:8443/signals  header X-Api-Key: <token>
+    # body: {"station": "Line 2/Test", "values": {"state": "Running", "speed": 21.0, "vibration": 2.9}}
+    # Batches from MES / ERP can be pushed to the same endpoint:
+    # POST https://<collector>:8443/batches
+    # body: [{"line": "Line 1", "batch_no": "MO-1001", "product": "Insulin pen body", "destination": "Germany",
+    #         "planned_qty": 12000, "status": "started"}]          status: started | running | completed
+    # batch_fields: {batch_no: ORDER_NUMBER, product: MATERIAL_TEXT}   # optional: rename their fields
+
+  # --- MES / ERP batches, polled (read-only). Use ONE of: query (SQL view) or url (REST / OData)
+  - type: mes
+    interval_s: 30
+    db_url: ${MES_DB_URL}               # read-only account on an MES reporting view
+    query: >
+      SELECT line_name, order_no, material_text, market, planned_qty, status, start_time, end_time
+      FROM mes_reporting.v_production_orders WHERE last_change > :since
+    fields: {line: line_name, batch_no: order_no, product: material_text, destination: market,
+             planned_qty: planned_qty, status: status, started_at: start_time, ended_at: end_time}
+  # - type: mes                         # REST alternative, e.g. SAP S/4HANA production orders (OData) or an MES API
+  #   url: https://mes.example.com/api/orders?state=active
+  #   headers: {Authorization: "Bearer ${MES_TOKEN}"}
+  #   fields: {line: WorkCenter, batch_no: ManufacturingOrder, product: MaterialName, planned_qty: TotalQuantity}

@@ -1,0 +1,13 @@
+sqlalchemy>=2.0
+psycopg[binary]>=3.1
+pandas>=2.2
+pyyaml>=6.0
+tzdata>=2024.1
+asyncua>=1.1          # OPC UA
+paho-mqtt>=2.0        # MQTT
+pymodbus>=3.6         # Modbus TCP
+confluent-kafka>=2.3  # Kafka
+# SQL source: add the driver for your historian, for example
+#   pyodbc       (SQL Server: mssql+pyodbc://...)
+#   pymysql      (MySQL / MariaDB: mysql+pymysql://...)
+#   oracledb     (Oracle: oracle+oracledb://...)
