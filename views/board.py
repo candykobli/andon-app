@@ -177,7 +177,8 @@ def render():
             st.session_state["board_line_filter"] = show or own
         st.caption(f"TV link: **/board?kiosk=1&b={int(bc['id'])}**" + ("&key=…" if ui.secret("DEVICE_KEY") else "")
                    + (" · line screen: shows only this line" if bc.get("kind") == "line" else " · management overview"))
-    _board()
+    ui.live_control("board")
+    ui.run_live(_board)
     if bool(bc.get("sound", True)):
         sound_player()
 
@@ -250,7 +251,6 @@ def _alert(oc) -> str:
             f"style='display:none'></div>")
 
 
-@st.fragment(run_every="5s")
 def _board():
     e = ui.engine()
     signals.simulate_if_due(e)

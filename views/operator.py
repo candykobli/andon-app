@@ -97,11 +97,12 @@ def render():
         else:
             st.caption(":orange-badge[Running] The call shows yellow on the board. Switch to *Line stopped* if production has stopped.")
         _specific_problem(c, line_id, sid, stopped, open_types)
-        _open_calls(c, sid)
+        ui.run_live(_open_calls, c, sid)
         _planned_stop(c, line_id, sid)
     with right:
         _batch_card(c, line_id)
-        _live_panel(c, sid)
+        ui.run_live(_live_panel, c, sid)
+    ui.live_control("operator")
 
 
 def _specific_problem(c, line_id, sid, stopped, open_types):
@@ -168,7 +169,6 @@ def _batch_card(c, line_id):
                     f"<br><span class='an-muted'>Destination: {r['destination'] or '–'}</span></div>", unsafe_allow_html=True)
 
 
-@st.fragment(run_every="5s")
 def _open_calls(c, sid):
     e = ui.engine()
     signals.simulate_if_due(e)
@@ -209,7 +209,6 @@ def _open_calls(c, sid):
                     st.rerun(scope="app")
 
 
-@st.fragment(run_every="5s")
 def _live_panel(c, sid):
     e = ui.engine()
     now = db.utcnow()

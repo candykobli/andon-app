@@ -68,12 +68,12 @@ def render():
 
     left, right = st.columns([1.3, 1], gap="large")
     with left:
-        _queue(sel_types, sel_lines)
+        ui.live_control("responder")
+        ui.run_live(_queue, sel_types, sel_lines)
     with right:
         _action_panel(c)
 
 
-@st.fragment(run_every="5s")
 def _queue(sel_types, sel_lines):
     e = ui.engine()
     signals.simulate_if_due(e)

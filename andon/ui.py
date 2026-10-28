@@ -59,6 +59,42 @@ def secure() -> None:
     _secured(private(), hashlib.sha256(("andon:" + pin).encode()).hexdigest())
 
 
+# ------------------------------------------------------------------ live updates
+LIVE_CHOICES = ["Live", "Every 30 s", "Paused"]
+
+
+def _live_default() -> str:
+    """Station tablets and screens opened with a device key stay live; people on a computer get calmer updates."""
+    return "Live" if (current_user() is None or device_ok()) else "Every 30 s"
+
+
+def live_control(page: str) -> None:
+    """Small 'Updates' choice on pages that refresh themselves. Wall screens (kiosk links) are always live."""
+    if st.query_params.get("kiosk") == "1":
+        return
+    pref = st.session_state.get("live_pref") or _live_default()
+
+    def _keep():
+        v = st.session_state.get(f"live_{page}")
+        st.session_state["live_pref"] = v or pref
+
+    a, b = st.columns([3, 1], vertical_alignment="center")
+    choice = a.segmented_control("Updates", LIVE_CHOICES, default=pref, key=f"live_{page}", on_change=_keep,
+                                 help="Live: every 5 seconds · Every 30 s: calmer while you read · Paused: only when you click Refresh")
+    if (choice or pref) == "Paused":
+        b.button("Refresh now", icon=":material/refresh:", key=f"live_refresh_{page}", width="stretch")
+
+
+def run_live(fn, *args, fast: str = "5s"):
+    """Run a page section that updates itself, at the speed chosen with live_control()."""
+    if st.query_params.get("kiosk") == "1":
+        interval = fast
+    else:
+        choice = st.session_state.get("live_pref") or _live_default()
+        interval = {"Live": fast, "Every 30 s": "30s", "Paused": None}.get(choice, "30s")
+    return st.fragment(fn, run_every=interval)(*args)
+
+
 def device_ok() -> bool:
     """A tablet or TV opened with the right ?key=DEVICE_KEY."""
     import hmac

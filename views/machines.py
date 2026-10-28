@@ -15,12 +15,12 @@ def render():
     ui.need("machines", "Machines")
     ui.css()
     st.markdown("## Machines")
-    _live()
+    ui.live_control("machines")
+    ui.run_live(_live)
     st.divider()
     _trends()
 
 
-@st.fragment(run_every="5s")
 def _live():
     e = ui.engine()
     signals.simulate_if_due(e)
